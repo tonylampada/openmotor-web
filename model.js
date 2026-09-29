@@ -180,7 +180,7 @@ export function suggestFixes(model, res) {
       const curCore = Math.max(...G.map(g => g.coreDiameter_mm));
       const c = search(okFlux(setCores), curCore, maxDia - 2 * minCoreGap, +1);
       if (c != null) s.actions.push(action(model, `Open cores to ${ceil1(c)} mm`, setCores(ceil1(c)), 'mass flux'));
-      if (G.length > 1) s.actions.push(action(model, `Remove grain ${G.length} (${G.length - 1} grains)`, m => { m.grains.pop(); }, 'mass flux'));
+      if (G.length > 1) s.actions.push(action(model, `Remove grain ${G.length} (${G.length - 1} left)`, m => { m.grains.pop(); }, 'mass flux'));
       s.actions.push(action(model, 'Inhibit both ends of all grains', m => m.grains.forEach(g => { g.inhibitedEnds = 'Both'; }), 'mass flux'));
       const t = search(okFlux(setThroat), noz.throat_mm, Math.min(noz.exit_mm, maxDia), +1);
       if (t != null) s.actions.push(action(model, `Open throat to ${ceil1(t)} mm`, setThroat(ceil1(t)), 'mass flux'));
@@ -203,9 +203,11 @@ export function suggestFixes(model, res) {
       else {
         // The ignition sample (exit pressure 0) and the burnout sample always count as "below", so at a
         // coarse timestep they alone can exceed the warn fraction. A finer timestep shrinks their share.
-        const dt = Math.min(cfg.timestep_s, 0.01);
-        const withDt = m => { m.config.timestep_s = dt; };
-        const e2 = exitFix(applied(model, withDt));
+        let dt, e2 = null, withDt;
+        for (dt of [0.01, 0.005, 0.002].filter(x => x < cfg.timestep_s)) {
+          withDt = (d => m => { m.config.timestep_s = d; })(dt);
+          if ((e2 = exitFix(applied(model, withDt))) != null) break;
+        }
         s.text += ` At a ${cfg.timestep_s} s timestep the ignition and burnout samples alone are ${round(2 / res.channels.time.length * 100, 0)}% of the samples, so no exit size can clear this; a finer timestep is needed too.`;
         if (e2 != null) { const x = floor1(e2); s.actions.push(action(model, `Exit ${x} mm + timestep ${dt} s`, m => { withDt(m); setExit(x)(m); }, 'Low exit pressure')); }
       }
@@ -225,4 +227,69 @@ export function suggestFixes(model, res) {
     out.push(s);
   }
   return out;
+}
+
+// --- LLM round-trip ----------------------------------------------------------------------------
+
+const LEVERS = [
+  ['Initial port/throat ratio of X was less than Y', 'Aft grain port area / throat area = (aft coreDiameter_mm / throat_mm)^2 must be >= config.minPortThroat. Fix: coreDiameter_mm >= throat_mm*sqrt(minPortThroat) on the aft (last) grain, or a smaller throat_mm (raises pressure).'],
+  ['Peak mass flux exceeded configured limit', 'Gas mass flow per core area at the aft end of a grain exceeds config.maxMassFlux_kg_m2s. Fix: larger coreDiameter_mm, fewer/shorter grains, inhibit faces, or larger throat_mm (lower pressure -> slower burn).'],
+  ['Max pressure exceeded configured limit', 'Peak chamber pressure > config.maxPressure_MPa. Pressure rises with Kn = burning area / throat area. Fix: larger throat_mm, fewer grains, or smaller core.'],
+  ['Max core Mach number exceeded ...', 'Core gas Mach number > config.maxMachNumber (or >= 1). Fix: larger coreDiameter_mm.'],
+  ['Low exit pressure, nozzle flow may separate', 'More than config.flowSeparationWarnPercent of samples have exit pressure below ambient*sepPressureRatio. The ignition sample and the burnout sample always count, so with timestep_s 0.03 (~20 samples) this warning cannot clear; use timestep_s <= 0.01 and a smaller exit_mm (lower expansion ratio (exit/throat)^2).'],
+  ["Chamber pressure deviated from propellant's entered ranges", 'Pressure left the min..max pressure of the burn-rate tabs. Fix: move pressure into range via throat_mm, or extend the tabs.'],
+  ['Motor did not generate thrust', 'Pressure too low. Fix: smaller throat_mm or more burning area.'],
+];
+
+export function llmContext(model, res) {
+  const spec = (title, fields) => [`${title}:`, ...fields.map(f => f.enum
+    ? `  - ${f.key}: one of ${f.enum.map(v => JSON.stringify(v)).join(' | ')}. ${f.help}`
+    : `  - ${f.key}: number, valid ${f.min}..${f.max}, typical ${f.lo}..${f.hi}. ${f.help}`)].join('\n');
+  let results = 'The current inputs do not simulate (see alerts).';
+  if (res) {
+    const r = res;
+    results = [
+      `designation ${r.getDesignation()} (${Math.round(r.getImpulseClassPercentage() * 100)}% of class)`,
+      `total impulse ${r.getImpulse().toFixed(2)} Ns`, `delivered ISP ${r.getISP().toFixed(2)} s`, `burn time ${r.getBurnTime().toFixed(3)} s`,
+      `average thrust ${r.getAverageForce().toFixed(1)} N`, `peak thrust ${Math.max(...r.channels.force).toFixed(1)} N`,
+      `average pressure ${(r.getAveragePressure() / 1e6).toFixed(3)} MPa (${(r.getAveragePressure() / 6895).toFixed(0)} psi)`,
+      `peak pressure ${(r.getMaxPressure() / 1e6).toFixed(3)} MPa (${(r.getMaxPressure() / 6895).toFixed(0)} psi)`,
+      `initial Kn ${r.getInitialKN().toFixed(1)}`, `peak Kn ${r.getPeakKN().toFixed(1)}`,
+      `propellant mass ${(r.getPropellantMass() * 1000).toFixed(1)} g`, `volume loading ${r.getVolumeLoading().toFixed(2)}%`,
+      `port/throat ${r.getPortRatio().toFixed(3)}`, `peak mass flux ${r.getPeakMassFlux().toFixed(0)} kg/(m^2*s) at grain ${r.getPeakMassFluxLocation() + 1}`,
+      `delivered thrust coefficient ${r.getAdjustedThrustCoefficient().toFixed(3)}`,
+    ].map(s => `- ${s}`).join('\n');
+  }
+  const alerts = res ? res.alerts : simulate(model).alerts;
+  return `You are helping design a solid rocket motor in "openMotor web", a browser port of openMotor (github.com/reilleya/openMotor). It simulates BATES grains (cylinders with a round core) stacked in a chamber, burning through one nozzle. Each timestep it computes burning area -> Kn (burning area / throat area) -> chamber pressure from the propellant's burn rate law r = a*P^n -> thrust from the nozzle's thrust coefficient -> regresses each grain by r*dt, until thrust drops below the burnout threshold.
+
+The whole motor is one JSON document. Units are in the key names (mm, MPa, kPa, kg_m3, K, g_mol, s, deg, pct). Grains are listed head end (forward) first; the last grain is the aft grain next to the nozzle.
+
+SCHEMA
+{ "schema": "openmotor-web/1", "grains": [grain, ...1-20], "nozzle": {...}, "propellant": {...}, "config": {...} }
+${spec('grain (each item of "grains"; also has "type": "BATES", the only supported type)', FIELDS.grain)}
+  Constraint: coreDiameter_mm < diameter_mm.
+${spec('nozzle', FIELDS.nozzle)}
+  Constraint: exit_mm >= throat_mm.
+${spec('propellant (also "name": string, and "tabs": [tab, ...] burn-rate law by pressure range)', FIELDS.propellant)}
+${spec('tab (each item of propellant.tabs; ranges must not overlap; with one tab use 0..10.3425)', FIELDS.tab)}
+${spec('config', FIELDS.config)}
+
+ALERTS (same checks and wording as openMotor) AND THE LEVERS THAT FIX THEM
+${LEVERS.map(([a, b]) => `- "${a}": ${b}`).join('\n')}
+Useful relations: Kn = total burning area / throat area; more Kn -> higher pressure (P ~ Kn^(1/(1-n))). Designation letter = impulse class (I: 320-640 Ns, J: 640-1280 Ns), number = average thrust in N.
+
+CURRENT MOTOR JSON
+${JSON.stringify(normalize(model), null, 2)}
+
+CURRENT RESULTS
+${results}
+
+CURRENT ALERTS
+${alerts.length ? alerts.map(a => `- ${a.level} (${a.type}, ${a.location || 'N/A'}): ${a.description}`).join('\n') : '- none'}
+
+TASK
+The user's request comes after this context. If there is none, propose one improved variant that clears as many alerts as possible while keeping the motor's character, and say briefly what you changed.
+
+Reply with a complete JSON in the same schema.`;
 }

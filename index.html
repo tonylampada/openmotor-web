@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>openMotor web</title>
+<meta name="description" content="Live-slider solid rocket motor simulator — a web port of openMotor's BATES physics.">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.min.css">
+<script src="https://cdn.jsdelivr.net/npm/uplot@1.6.30/dist/uPlot.iife.min.js"></script>
+<style>
+:root {
+  --bg: #f4f5f7; --panel: #fff; --ink: #1d2230; --muted: #667085; --line: #e3e6ec; --accent: #d9480f; --accent-ink: #fff;
+  --warn-bg: #fff4e0; --warn: #9a5b00; --err-bg: #fde8e8; --err: #b42318; --ok: #1a7f37; --chip: #eef0f4;
+  --track: #d5d9e1;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151c; --panel: #1b1f29; --ink: #e6e8ee; --muted: #98a0b3; --line: #2c3240; --accent: #ff7a3d; --accent-ink: #111;
+    --warn-bg: #3a2c12; --warn: #ffc266; --err-bg: #3d1a1a; --err: #ff8a80; --ok: #6fd08c; --chip: #262b37; --track: #3a4150;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
+header h1 small { color: var(--muted); font-weight: 400; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; padding: 4px 8px; }
+.seg button.on { background: var(--ink); color: var(--panel); }
+button, select, input[type=number], textarea { font: inherit; color: inherit; }
+button { background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+main { display: grid; grid-template-columns: minmax(300px, 400px) minmax(0, 1fr); gap: 12px; padding: 12px 16px; align-items: start; }
+#inputs { position: sticky; top: 64px; max-height: calc(100vh - 76px); overflow: auto; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 12px; min-width: 0; }
+details > summary { cursor: pointer; padding: 10px 12px; font-weight: 600; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::after { content: "▸"; color: var(--muted); }
+details[open] > summary::after { content: "▾"; }
+.body { padding: 0 12px 12px; }
+.field { display: grid; grid-template-columns: 118px minmax(0, 1fr) 76px 44px; gap: 6px; align-items: center; margin: 5px 0; }
+.field label { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.field input[type=number] { width: 100%; padding: 3px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); text-align: right; }
+.field .unit { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.field select { grid-column: 2 / 5; padding: 3px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); }
+input[type=range] { width: 100%; accent-color: var(--accent); margin: 0; }
+.grain { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; }
+.grain-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.grain-head b { font-size: 13px; }
+.grain-head .btns { display: flex; gap: 4px; }
+.grain-head .btns button { padding: 2px 7px; font-size: 12px; }
+.grain-viz { display: flex; gap: 10px; align-items: center; margin: 2px 0 4px; }
+.grain-viz svg { flex: none; }
+.grain-viz .cap { font-size: 12px; color: var(--muted); }
+.tab { border-top: 1px dashed var(--line); padding-top: 6px; margin-top: 6px; }
+.tab-title { font-size: 12px; color: var(--muted); }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 16px; padding: 10px 12px; }
+.stat { display: flex; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--line); padding: 3px 0; min-width: 0; }
+.stat span:first-child { color: var(--muted); white-space: nowrap; }
+.stat span:last-child { font-variant-numeric: tabular-nums; text-align: right; }
+.stat.big span:last-child { font-weight: 700; color: var(--accent); }
+.chart-wrap { display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 8px; padding: 8px 12px 12px; }
+#chart { min-width: 0; position: relative; }
+.series-pick { font-size: 13px; }
+.series-pick h4 { margin: 6px 0 2px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.series-pick label { display: flex; gap: 6px; align-items: center; padding: 1px 0; cursor: pointer; }
+.series-pick .sw { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.tooltip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.15); z-index: 3; white-space: nowrap; display: none; }
+.tooltip b { display: block; margin-bottom: 2px; }
+.tooltip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+.uplot .u-legend { display: none; }
+.uplot { font-family: inherit; }
+.blocked { padding: 24px; text-align: center; color: var(--muted); }
+table.alerts { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.alerts th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+table.alerts td { padding: 6px 8px; vertical-align: top; border-bottom: 1px solid var(--line); }
+.lvl { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+.lvl.Warning { background: var(--warn-bg); color: var(--warn); }
+.lvl.Error { background: var(--err-bg); color: var(--err); }
+.fix { background: var(--bg); border-radius: 8px; padding: 8px 10px; margin-top: 6px; }
+.fix p { margin: 0 0 6px; }
+.fix .acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.fix .acts button { font-size: 12px; text-align: left; }
+.fix .acts button .res { display: block; font-size: 11px; color: var(--muted); }
+.fix .acts button .ok { color: var(--ok); }
+.none { padding: 12px; color: var(--ok); }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); width: min(720px, calc(100vw - 32px)); padding: 16px; }
+dialog::backdrop { background: rgba(0,0,0,.4); }
+dialog textarea { width: 100%; height: 300px; font: 12px/1.4 ui-monospace, Menlo, monospace; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+dialog.drag textarea { outline: 2px dashed var(--accent); }
+.err { color: var(--err); white-space: pre-wrap; font-size: 13px; }
+.toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--panel); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; }
+.toast.show { opacity: 1; }
+#mini { display: none; }
+footer { color: var(--muted); font-size: 12px; padding: 0 16px 16px; }
+footer a { color: inherit; }
+@media (max-width: 860px) {
+  main { grid-template-columns: minmax(0, 1fr); padding: 8px 16px; }
+  #inputs { position: static; max-height: none; overflow: visible; order: 2; }
+  #results { order: 1; }
+  .chart-wrap { grid-template-columns: minmax(0, 1fr); }
+  .series-pick { display: flex; flex-wrap: wrap; gap: 0 12px; }
+  .series-pick h4 { width: 100%; }
+  .field { grid-template-columns: 96px minmax(0, 1fr) 70px 40px; }
+  header { position: static; }
+  #mini { display: block; position: sticky; top: 0; z-index: 6; background: var(--ink); color: var(--panel); padding: 8px 16px; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .mini-warn { color: #ffb020; font-weight: 700; } .mini-ok { color: #6fd08c; }
+  .stats { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px 12px; }
+  table.alerts th:nth-child(2), table.alerts td:nth-child(2), table.alerts th:nth-child(3), table.alerts td:nth-child(3) { display: none; }
+  table.alerts td:first-child { width: 1%; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>openMotor <small>web · live</small></h1>
+  <div class="toolbar">
+    <span class="seg" data-unit="length"><button data-v="mm">mm</button><button data-v="in">in</button></span>
+    <span class="seg" data-unit="pressure"><button data-v="psi">psi</button><button data-v="MPa">MPa</button></span>
+    <span class="seg" data-unit="force"><button data-v="N">N</button><button data-v="lbf">lbf</button></span>
+  </div>
+  <div class="toolbar">
+    <button id="undo" disabled title="Undo the last 'try it' / import">Undo</button>
+    <button id="export">Copy JSON</button>
+    <button id="download">Download</button>
+    <button id="import">Import…</button>
+    <button id="llm" class="primary" title="Copy a self-contained prompt for any LLM">Copy LLM context</button>
+    <button id="reset">Reset</button>
+  </div>
+</header>
+<div id="mini" title="Live summary"></div>
+<main>
+  <section id="inputs"></section>
+  <section id="results">
+    <div class="card"><div class="stats" id="stats"></div></div>
+    <div class="card">
+      <div class="chart-wrap">
+        <div id="chart"><div class="tooltip" id="tip"></div></div>
+        <div class="series-pick" id="pick"></div>
+      </div>
+    </div>
+    <div class="card" id="alerts"></div>
+  </section>
+</main>
+<footer>Physics ported from <a href="https://github.com/reilleya/openMotor">openMotor</a> by Andrew Reilley (GPL-3.0). BATES grains only. <a href="https://github.com/tonylampada/openmotor-web">Source</a>.</footer>
+<dialog id="importDlg">
+  <h3 style="margin-top:0">Import motor JSON</h3>
+  <p style="margin-top:0;color:var(--muted)">Paste JSON, or drop a .json file on the box.</p>
+  <textarea id="importText" spellcheck="false" placeholder='{"schema":"openmotor-web/1", ...}'></textarea>
+  <div class="err" id="importErr"></div>
+  <div class="row" style="justify-content:flex-end;margin-top:8px">
+    <input type="file" id="importFile" accept=".json,application/json" style="margin-right:auto">
+    <button id="importPaste">Paste from clipboard</button>
+    <button id="importCancel">Cancel</button>
+    <button id="importApply" class="primary">Apply</button>
+  </div>
+</dialog>
+<div class="toast" id="toast"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
